@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "${CLAUDE_PLUGIN_ROOT}/scripts/claude-popup.ps1", "-Event", "Stop"],
+            "async": true,
+            "timeout": 330
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "${CLAUDE_PLUGIN_ROOT}/scripts/claude-popup.ps1", "-Event", "Notification"],
+            "async": true,
+            "timeout": 330
+          }
+        ]
+      }
+    ]
+  }
+}

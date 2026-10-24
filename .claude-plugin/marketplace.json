@@ -1,0 +1,14 @@
+{
+  "name": "session-popup",
+  "description": "Windows-Popup-Benachrichtigungen für Claude Code.",
+  "owner": {
+    "name": "oasis4"
+  },
+  "plugins": [
+    {
+      "name": "session-popup",
+      "source": "./",
+      "description": "Dezentes Windows-Popup, wenn Claude fertig ist oder dich braucht – mit Button zurück zur Session."
+    }
+  ]
+}
