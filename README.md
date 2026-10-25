@@ -22,7 +22,7 @@ Ein dezentes Windows-Popup für Claude Code. Es erscheint, wenn Claude fertig is
 - **Zeigt den echten Inhalt:** den Text der Anfrage bzw. die erste Zeile der Antwort, dazu den Projektordner.
 - **✓** schließt es sofort, **„Zur Session“** holt das Terminal bzw. Claude Desktop nach vorne.
 - **Blendet sich nach 8 Sekunden aus**, außer die Maus ist darauf.
-- **Bleibt still, wenn die Session schon im Vordergrund ist.**
+- **Bleibt still, wenn das Terminal der Session schon im Vordergrund ist.** In Claude Desktop kommt es immer, weil dort mehrere Sessions im selben Fenster laufen und nicht erkennbar ist, welche gerade offen ist.
 - **Immer nur ein Popup:** Ein neues ersetzt das alte.
 - **Läuft asynchron**, Claude wartet nicht darauf.
 

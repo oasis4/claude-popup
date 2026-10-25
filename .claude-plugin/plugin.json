@@ -1,6 +1,6 @@
 {
   "name": "session-popup",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Dezentes Windows-Popup, wenn Claude Code fertig ist oder dich braucht – mit Button zurück zur Session. Funktioniert auch bei „Nicht stören“.",
   "author": {
     "name": "oasis4"

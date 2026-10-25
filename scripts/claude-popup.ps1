@@ -46,12 +46,14 @@ Add-Type -Namespace CP -Name Win -MemberDefinition @'
 
 # --- Fenster der Session finden: Terminal ueber die Konsole von claude.exe, sonst Claude Desktop ---
 $global:cpTarget = [IntPtr]::Zero
-$p = Get-CimInstance Win32_Process -Filter "ProcessId=$PID"
+$isTerminal = $false
+$p =Get-CimInstance Win32_Process -Filter "ProcessId=$PID"
 while ($p -and $p.Name -ne 'claude.exe') { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.ParentProcessId)" }
 if ($p) {
   [CP.Win]::FreeConsole() | Out-Null
   if ([CP.Win]::AttachConsole([uint32]$p.ProcessId)) {
     $global:cpTarget = [CP.Win]::GetAncestor([CP.Win]::GetConsoleWindow(), 3)
+    $isTerminal = $global:cpTarget -ne [IntPtr]::Zero
     [CP.Win]::FreeConsole() | Out-Null
   }
 }
@@ -60,8 +62,9 @@ if ($global:cpTarget -eq [IntPtr]::Zero) {
   if ($desk) { $global:cpTarget = $desk.MainWindowHandle }
 }
 
-# Kein Popup, wenn die Session ohnehin gerade im Vordergrund ist
-if ($global:cpTarget -ne [IntPtr]::Zero -and [CP.Win]::GetForegroundWindow() -eq $global:cpTarget) { exit 0 }
+# Kein Popup, wenn das Terminal der Session ohnehin gerade im Vordergrund ist.
+# Nicht fuer Claude Desktop: dort laufen mehrere Sessions im selben Fenster, das sichtbare Projekt ist nicht erkennbar.
+if ($isTerminal -and[CP.Win]::GetForegroundWindow() -eq $global:cpTarget) { exit 0 }
 
 # Nur ein Popup gleichzeitig: ein vorheriges schliessen
 $pidFile = Join-Path $env:TEMP 'claude-popup.pid'
