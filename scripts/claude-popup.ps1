@@ -126,7 +126,7 @@ Set-Content $pidFile $PID
     <Button x:Name="Open" Grid.Row="2" Style="{StaticResource Primary}" Height="32" Margin="0,14,6,0">
       <StackPanel Orientation="Horizontal">
         <TextBlock Text="&#xE8A7;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center" Margin="0,1,8,0"/>
-        <TextBlock Text="Zur Session" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13" VerticalAlignment="Center"/>
+        <TextBlock x:Name="OpenText" Text="Zur Session" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13" VerticalAlignment="Center"/>
       </StackPanel>
     </Button>
   </Grid>
@@ -134,9 +134,11 @@ Set-Content $pidFile $PID
 '@
 
 $content = [System.Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))
-$content.FindName('ProjectText').Text = "  ·  $Project"
+$content.FindName('ProjectText').Text = "  $([char]0xB7)  $Project"
 $content.FindName('TitleText').Text   = $Title
 $content.FindName('DetailText').Text  = $Detail
+# Claude Desktop laesst sich nur als Fenster nach vorne holen, nicht auf einen bestimmten Chat umschalten
+if (-not $isTerminal) { $content.FindName('OpenText').Text = "Claude $([char]0xF6)ffnen" }
 
 # Position vor dem Anzeigen berechnen (wichtig bei mehreren Monitoren mit Skalierung)
 $W = 400
