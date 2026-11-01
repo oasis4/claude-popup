@@ -49,6 +49,10 @@ Danach Claude Code bzw. Claude Desktop neu starten.
 - In Claude Desktop kann das Popup nicht auf einen bestimmten Chat umschalten. Claude Desktop bietet dafür bisher keinen offiziellen Weg (die `claude://` Links können nur neue Code-Sessions öffnen). Wenn mehrere Chats offen sind, erkennst du am Projektnamen im Popup, welcher fertig ist, und wählst ihn in der Seitenleiste aus.
 - In Claude Desktop löst der `Notification`-Hook je nach Version bei Berechtigungsanfragen eventuell nicht aus. Der `Stop`-Hook funktioniert.
 
+## Wenn „Zur Session“ nicht funktioniert
+
+Das Popup schreibt bei jedem Erscheinen und jedem Klick ein kurzes Protokoll nach `%TEMP%\claude-popup.log`. Drücke Windows+R, gib `%TEMP%\claude-popup.log` ein und schicke den Inhalt mit, wenn du einen Fehler meldest. Es enthält keine Nachrichten, nur Prozessnamen und Fenstertitel. Ein Fenstertitel kann je nach Terminal den Namen der Session enthalten.
+
 ## Deinstallieren
 
 ```
