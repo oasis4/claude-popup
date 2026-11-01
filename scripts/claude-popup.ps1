@@ -5,6 +5,11 @@ param([string]$Event = "Notification")
 
 $ErrorActionPreference = 'SilentlyContinue'
 
+# Protokoll des letzten Popups zur Fehlersuche: %TEMP%\claude-popup.log
+$global:cpLog = Join-Path $env:TEMP 'claude-popup.log'
+function global:Write-CPLog([string]$m) { Add-Content $global:cpLog "$(Get-Date -Format 'HH:mm:ss') $m" }
+Set-Content $global:cpLog "session-popup, Event $Event, PID $PID"
+
 # --- Hook-Daten von stdin lesen ---
 [Console]::InputEncoding = [Text.Encoding]::UTF8
 $data = $null
@@ -42,29 +47,76 @@ Add-Type -Namespace CP -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
 [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);
+[DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+public static string Describe(IntPtr h) {
+  if (h == IntPtr.Zero) return "0";
+  uint pid; GetWindowThreadProcessId(h, out pid);
+  var sb = new System.Text.StringBuilder(256); GetWindowText(h, sb, 256);
+  string name = "?"; try { name = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; } catch {}
+  return h.ToString() + " (" + name + " " + pid + ", sichtbar " + IsWindowVisible(h) + ", Titel '" + sb + "')";
+}
 '@
 
-# --- Fenster der Session finden: Terminal ueber die Konsole von claude.exe, sonst Claude Desktop ---
+# --- Fenster der Session finden ---
+# Vorfahren dieses Prozesses sammeln. Begrenzt, weil PID 0 sich selbst als Eltern hat;
+# ein Eltern-Prozess, der juenger ist als das Kind, ist eine wiederverwendete PID und zaehlt nicht.
+$chain = @()
+$p = Get-CimInstance Win32_Process -Filter "ProcessId=$PID"
+while ($p -and $chain.Count -lt 20) {
+  $chain += $p
+  if ($p.ParentProcessId -eq 0 -or $p.ParentProcessId -eq $p.ProcessId) { break }
+  $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.ParentProcessId)"
+  if ($parent -and $parent.CreationDate -gt $p.CreationDate) { break }
+  $p = $parent
+}
+
 $global:cpTarget = [IntPtr]::Zero
 $isTerminal = $false
-$p =Get-CimInstance Win32_Process -Filter "ProcessId=$PID"
-while ($p -and $p.Name -ne 'claude.exe') { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.ParentProcessId)" }
-if ($p) {
+$isDesktop = $false
+
+# 1. Terminal: Besitzerfenster der Konsole von claude.exe (z. B. das Windows-Terminal-Fenster).
+#    Ist es unsichtbar, ist es eine Pseudokonsole ohne Besitzer (VS Code, Claude Desktop, andere Terminals)
+#    und taugt nicht als Ziel, SetForegroundWindow darauf bewirkt nichts.
+$cli = $chain | Where-Object { $_.Name -eq 'claude.exe' } | Select-Object -First 1
+if ($cli) {
   [CP.Win]::FreeConsole() | Out-Null
-  if ([CP.Win]::AttachConsole([uint32]$p.ProcessId)) {
-    $global:cpTarget = [CP.Win]::GetAncestor([CP.Win]::GetConsoleWindow(), 3)
-    $isTerminal = $global:cpTarget -ne [IntPtr]::Zero
+  if ([CP.Win]::AttachConsole([uint32]$cli.ProcessId)) {
+    $h = [CP.Win]::GetAncestor([CP.Win]::GetConsoleWindow(), 3)
     [CP.Win]::FreeConsole() | Out-Null
+    Write-CPLog "Konsole von claude.exe $($cli.ProcessId): $([CP.Win]::Describe($h))"
+    if ($h -ne [IntPtr]::Zero -and [CP.Win]::IsWindowVisible($h)) { $global:cpTarget = $h; $isTerminal = $true }
   }
 }
+
+# 2. Sonst das erste Vorfahren-Fenster: VS Code, Claude Desktop oder ein anderes Terminal
+if ($global:cpTarget -eq [IntPtr]::Zero) {
+  foreach ($a in ($chain | Select-Object -Skip 1)) {
+    if ($a.Name -eq 'explorer.exe') { break }
+    $proc = Get-Process -Id $a.ProcessId
+    if ($proc -and $proc.MainWindowHandle -ne [IntPtr]::Zero) {
+      $global:cpTarget = $proc.MainWindowHandle
+      $isDesktop = $a.Name -eq 'claude.exe'
+      break
+    }
+  }
+}
+
+# 3. Letzter Ausweg: irgendein Fenster von Claude Desktop
 if ($global:cpTarget -eq [IntPtr]::Zero) {
   $desk = Get-Process claude | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
-  if ($desk) { $global:cpTarget = $desk.MainWindowHandle }
+  if ($desk) { $global:cpTarget = $desk.MainWindowHandle; $isDesktop = $true }
 }
+
+Write-CPLog "Vorfahren: $(($chain | ForEach-Object { "$($_.Name) $($_.ProcessId)" }) -join ' > ')"
+Write-CPLog "Ziel: $([CP.Win]::Describe($global:cpTarget)), Terminal $isTerminal, Desktop $isDesktop"
+Write-CPLog "Vordergrund: $([CP.Win]::Describe([CP.Win]::GetForegroundWindow()))"
 
 # Kein Popup, wenn das Terminal der Session ohnehin gerade im Vordergrund ist.
 # Nicht fuer Claude Desktop: dort laufen mehrere Sessions im selben Fenster, das sichtbare Projekt ist nicht erkennbar.
-if ($isTerminal -and[CP.Win]::GetForegroundWindow() -eq $global:cpTarget) { exit 0 }
+if ($isTerminal -and [CP.Win]::GetForegroundWindow() -eq $global:cpTarget) { Write-CPLog "Terminal ist vorne, kein Popup"; exit 0 }
 
 # Nur ein Popup gleichzeitig: ein vorheriges schliessen
 $pidFile = Join-Path $env:TEMP 'claude-popup.pid'
@@ -138,7 +190,7 @@ $content.FindName('ProjectText').Text = "  $([char]0xB7)  $Project"
 $content.FindName('TitleText').Text   = $Title
 $content.FindName('DetailText').Text  = $Detail
 # Claude Desktop laesst sich nur als Fenster nach vorne holen, nicht auf einen bestimmten Chat umschalten
-if (-not $isTerminal) { $content.FindName('OpenText').Text = "Claude $([char]0xF6)ffnen" }
+if ($isDesktop) { $content.FindName('OpenText').Text = "Claude $([char]0xF6)ffnen" }
 
 # Position vor dem Anzeigen berechnen (wichtig bei mehreren Monitoren mit Skalierung)
 $W = 400
@@ -171,10 +223,17 @@ function global:Hide-CP {
 $content.FindName('Done').Add_Click({ Hide-CP })
 $content.FindName('Open').Add_Click({
   $h = $global:cpTarget
+  Write-CPLog "Klick, Vordergrund: $([CP.Win]::Describe([CP.Win]::GetForegroundWindow()))"
   if ($h -ne [IntPtr]::Zero) {
     if ([CP.Win]::IsIconic($h)) { [CP.Win]::ShowWindow($h, 9) | Out-Null }
-    [CP.Win]::SetForegroundWindow($h) | Out-Null
-  }
+    $ok = [CP.Win]::SetForegroundWindow($h)
+    # Windows verweigert das manchmal (Vordergrund-Sperre); ein kurzer Alt-Tastendruck hebt sie auf
+    if (-not $ok) {
+      [CP.Win]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [CP.Win]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
+      $ok = [CP.Win]::SetForegroundWindow($h)
+    }
+    Write-CPLog "SetForegroundWindow: $ok, danach vorne: $([CP.Win]::Describe([CP.Win]::GetForegroundWindow()))"
+  } else { Write-CPLog "Klick, aber kein Zielfenster gefunden" }
   Hide-CP
 })
 $win.Add_MouseEnter({ $global:cpHold.Stop() })
