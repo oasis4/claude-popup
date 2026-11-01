@@ -181,6 +181,7 @@ Set-Content $pidFile $PID
         <TextBlock x:Name="OpenText" Text="Zur Session" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13" VerticalAlignment="Center"/>
       </StackPanel>
     </Button>
+    <TextBlock x:Name="Hint" Grid.Row="2" Visibility="Collapsed" Foreground="#9A9A9A" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="12" TextWrapping="Wrap" Margin="0,12,6,0"/>
   </Grid>
 </Border>
 '@
@@ -191,6 +192,14 @@ $content.FindName('TitleText').Text   = $Title
 $content.FindName('DetailText').Text  = $Detail
 # Claude Desktop laesst sich nur als Fenster nach vorne holen, nicht auf einen bestimmten Chat umschalten
 if ($isDesktop) { $content.FindName('OpenText').Text = "Claude $([char]0xF6)ffnen" }
+# Ist Claude Desktop schon vorne, koennte der Button nichts tun, also stattdessen sagen, wohin man wechseln muss
+if ($isDesktop -and [CP.Win]::GetForegroundWindow() -eq $global:cpTarget) {
+  $content.FindName('Open').Visibility = 'Collapsed'
+  $hint = $content.FindName('Hint')
+  $hint.Text = "Wechsle in der Seitenleiste zu $Project."
+  $hint.Visibility = 'Visible'
+  Write-CPLog "Claude Desktop ist vorne, Hinweis statt Button"
+}
 
 # Position vor dem Anzeigen berechnen (wichtig bei mehreren Monitoren mit Skalierung)
 $W = 400
