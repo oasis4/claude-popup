@@ -42,29 +42,61 @@ Add-Type -Namespace CP -Name Win -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
 [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
 '@
 
-# --- Fenster der Session finden: Terminal ueber die Konsole von claude.exe, sonst Claude Desktop ---
+# --- Fenster der Session finden ---
+# Vorfahren dieses Prozesses sammeln. Begrenzt, weil PID 0 sich selbst als Eltern hat;
+# ein Eltern-Prozess, der juenger ist als das Kind, ist eine wiederverwendete PID und zaehlt nicht.
+$chain = @()
+$p = Get-CimInstance Win32_Process -Filter "ProcessId=$PID"
+while ($p -and $chain.Count -lt 20) {
+  $chain += $p
+  if ($p.ParentProcessId -eq 0 -or $p.ParentProcessId -eq $p.ProcessId) { break }
+  $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.ParentProcessId)"
+  if ($parent -and $parent.CreationDate -gt $p.CreationDate) { break }
+  $p = $parent
+}
+
 $global:cpTarget = [IntPtr]::Zero
 $isTerminal = $false
-$p =Get-CimInstance Win32_Process -Filter "ProcessId=$PID"
-while ($p -and $p.Name -ne 'claude.exe') { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.ParentProcessId)" }
-if ($p) {
+$isDesktop = $false
+
+# 1. Terminal: Besitzerfenster der Konsole von claude.exe (z. B. das Windows-Terminal-Fenster).
+#    Ist es unsichtbar, ist es eine Pseudokonsole ohne Besitzer (VS Code, Claude Desktop, andere Terminals)
+#    und taugt nicht als Ziel, SetForegroundWindow darauf bewirkt nichts.
+$cli = $chain | Where-Object { $_.Name -eq 'claude.exe' } | Select-Object -First 1
+if ($cli) {
   [CP.Win]::FreeConsole() | Out-Null
-  if ([CP.Win]::AttachConsole([uint32]$p.ProcessId)) {
-    $global:cpTarget = [CP.Win]::GetAncestor([CP.Win]::GetConsoleWindow(), 3)
-    $isTerminal = $global:cpTarget -ne [IntPtr]::Zero
+  if ([CP.Win]::AttachConsole([uint32]$cli.ProcessId)) {
+    $h = [CP.Win]::GetAncestor([CP.Win]::GetConsoleWindow(), 3)
     [CP.Win]::FreeConsole() | Out-Null
+    if ($h -ne [IntPtr]::Zero -and [CP.Win]::IsWindowVisible($h)) { $global:cpTarget = $h; $isTerminal = $true }
   }
 }
+
+# 2. Sonst das erste Vorfahren-Fenster: VS Code, Claude Desktop oder ein anderes Terminal
+if ($global:cpTarget -eq [IntPtr]::Zero) {
+  foreach ($a in ($chain | Select-Object -Skip 1)) {
+    if ($a.Name -eq 'explorer.exe') { break }
+    $proc = Get-Process -Id $a.ProcessId
+    if ($proc -and $proc.MainWindowHandle -ne [IntPtr]::Zero) {
+      $global:cpTarget = $proc.MainWindowHandle
+      $isDesktop = $a.Name -eq 'claude.exe'
+      break
+    }
+  }
+}
+
+# 3. Letzter Ausweg: irgendein Fenster von Claude Desktop
 if ($global:cpTarget -eq [IntPtr]::Zero) {
   $desk = Get-Process claude | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
-  if ($desk) { $global:cpTarget = $desk.MainWindowHandle }
+  if ($desk) { $global:cpTarget = $desk.MainWindowHandle; $isDesktop = $true }
 }
 
 # Kein Popup, wenn das Terminal der Session ohnehin gerade im Vordergrund ist.
 # Nicht fuer Claude Desktop: dort laufen mehrere Sessions im selben Fenster, das sichtbare Projekt ist nicht erkennbar.
-if ($isTerminal -and[CP.Win]::GetForegroundWindow() -eq $global:cpTarget) { exit 0 }
+if ($isTerminal -and [CP.Win]::GetForegroundWindow() -eq $global:cpTarget) { exit 0 }
 
 # Nur ein Popup gleichzeitig: ein vorheriges schliessen
 $pidFile = Join-Path $env:TEMP 'claude-popup.pid'
@@ -138,7 +170,7 @@ $content.FindName('ProjectText').Text = "  $([char]0xB7)  $Project"
 $content.FindName('TitleText').Text   = $Title
 $content.FindName('DetailText').Text  = $Detail
 # Claude Desktop laesst sich nur als Fenster nach vorne holen, nicht auf einen bestimmten Chat umschalten
-if (-not $isTerminal) { $content.FindName('OpenText').Text = "Claude $([char]0xF6)ffnen" }
+if ($isDesktop) { $content.FindName('OpenText').Text = "Claude $([char]0xF6)ffnen" }
 
 # Position vor dem Anzeigen berechnen (wichtig bei mehreren Monitoren mit Skalierung)
 $W = 400
