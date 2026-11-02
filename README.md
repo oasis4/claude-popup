@@ -52,7 +52,7 @@ Danach Claude Code bzw. Claude Desktop neu starten.
 
 ## Wenn „Zur Session“ nicht funktioniert
 
-Das Popup schreibt bei jedem Erscheinen und jedem Klick ein kurzes Protokoll nach `%TEMP%\claude-popup.log`. Drücke Windows+R, gib `%TEMP%\claude-popup.log` ein und schicke den Inhalt mit, wenn du einen Fehler meldest. Es enthält keine Nachrichten, nur Prozessnamen und Fenstertitel. Ein Fenstertitel kann je nach Terminal den Namen der Session enthalten.
+Das Popup schreibt bei jedem Erscheinen und jedem Klick ein kurzes Protokoll nach `%TEMP%\claude-popup.log`. Es behält die letzten paar hundert Zeilen, also auch frühere Popups. Drücke Windows+R, gib `%TEMP%\claude-popup.log` ein und schicke den Inhalt mit, wenn du einen Fehler meldest. Es enthält keine Nachrichten, nur Prozessnamen und Fenstertitel. Ein Fenstertitel kann je nach Terminal den Namen der Session enthalten.
 
 ## Deinstallieren
 

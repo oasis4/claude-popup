@@ -5,10 +5,13 @@ param([string]$Event = "Notification")
 
 $ErrorActionPreference = 'SilentlyContinue'
 
-# Protokoll des letzten Popups zur Fehlersuche: %TEMP%\claude-popup.log
+# Protokoll zur Fehlersuche: %TEMP%\claude-popup.log, behaelt die letzten 400 Zeilen aller Popups.
+# Jede Zeile traegt die PID, weil mehrere Karten gleichzeitig schreiben koennen.
 $global:cpLog = Join-Path $env:TEMP 'claude-popup.log'
-function global:Write-CPLog([string]$m) { Add-Content $global:cpLog "$(Get-Date -Format 'HH:mm:ss') $m" }
-Set-Content $global:cpLog "session-popup, Event $Event, PID $PID"
+function global:Write-CPLog([string]$m) { Add-Content $global:cpLog "$(Get-Date -Format 'dd.MM. HH:mm:ss') [$PID] $m" }
+$old = @(Get-Content $global:cpLog)
+if ($old.Count -gt 400) { Set-Content $global:cpLog ($old | Select-Object -Last 300) }
+Write-CPLog "----- Event $Event"
 
 # --- Hook-Daten von stdin lesen ---
 [Console]::InputEncoding = [Text.Encoding]::UTF8
@@ -47,6 +50,8 @@ if ($Event -eq 'Stop') {
   }
   $Detail = if ($data.message) { $data.message } else { "Schau kurz in die Session." }
 }
+
+Write-CPLog "Titel '$Title', Projekt '$Project', Session '$("$($data.session_id)".Split('-')[0])'"
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
 Add-Type -Namespace CP -Name Win -MemberDefinition @'
@@ -283,7 +288,7 @@ function global:Hide-CP {
   $global:cpCloseT.Start()
 }
 
-$content.FindName('Done').Add_Click({ Hide-CP })
+$content.FindName('Done').Add_Click({ Write-CPLog "Erledigt geklickt"; Hide-CP })
 $content.FindName('Open').Add_Click({
   $h = $global:cpTarget
   Write-CPLog "Klick, Vordergrund: $([CP.Win]::Describe([CP.Win]::GetForegroundWindow()))"
@@ -305,7 +310,7 @@ $win.Add_MouseLeave({ $global:cpHold.Start() })
 # Nach 10 s ausblenden (pausiert, solange die Maus darauf ist); spaetestens nach 5 min hart schliessen
 $global:cpHold = New-Object System.Windows.Threading.DispatcherTimer
 $global:cpHold.Interval = [TimeSpan]::FromSeconds(10)
-$global:cpHold.Add_Tick({ Hide-CP })
+$global:cpHold.Add_Tick({ Write-CPLog "Nach 10 s ausgeblendet"; Hide-CP })
 $global:cpKill = New-Object System.Windows.Threading.DispatcherTimer
 $global:cpKill.Interval = [TimeSpan]::FromMinutes(5)
 $global:cpKill.Add_Tick({ $global:cpKill.Stop(); $global:cpWin.Close() })
@@ -315,7 +320,7 @@ $global:cpStack = New-Object System.Windows.Threading.DispatcherTimer
 $global:cpStack.Interval = [TimeSpan]::FromMilliseconds(200)
 $global:cpStack.Add_Tick({
   $slot = Get-CPSlot
-  if (-not $slot) { Hide-CP; return }
+  if (-not $slot) { Write-CPLog "Karte weicht (neuere Karte derselben Session oder mehr als 4)"; Hide-CP; return }
   if ([math]::Abs($slot[0] - $global:cpTop) -gt 0.5) {
     $global:cpTop = $slot[0]
     $move = New-Object System.Windows.Media.Animation.DoubleAnimation($global:cpWin.Top, $slot[0], [TimeSpan]::FromMilliseconds(280))
