@@ -129,13 +129,38 @@ Write-CPLog "Vordergrund: $([CP.Win]::Describe([CP.Win]::GetForegroundWindow()))
 # Nicht fuer Claude Desktop: dort laufen mehrere Sessions im selben Fenster, das sichtbare Projekt ist nicht erkennbar.
 if ($isTerminal -and [CP.Win]::GetForegroundWindow() -eq $global:cpTarget) { Write-CPLog "Terminal ist vorne, kein Popup"; exit 0 }
 
-# Nur ein Popup gleichzeitig: ein vorheriges schliessen
-$pidFile = Join-Path $env:TEMP 'claude-popup.pid'
-if (Test-Path $pidFile) {
-  $old = Get-Content $pidFile | Select-Object -First 1
-  if ($old -and $old -ne "$PID") { Get-Process -Id $old | Where-Object { $_.ProcessName -eq 'powershell' } | Stop-Process -Force }
+# --- Stapel: jede Karte meldet sich mit einer Datei in %TEMP%\claude-popup an (Session|Zeit|Hoehe) ---
+# Neueste Karte unten, aeltere darueber. Hoechstens 4 Karten; meldet sich dieselbe Session erneut, weicht ihre alte Karte.
+$global:cpDir = Join-Path $env:TEMP 'claude-popup'
+New-Item -ItemType Directory -Force $global:cpDir | Out-Null
+$global:cpFile = Join-Path $global:cpDir "$PID.card"
+$global:cpSession = "$($data.session_id)"
+$global:cpCreated = [DateTime]::UtcNow.Ticks
+
+function global:Get-CPCards {
+  $cards = foreach ($f in Get-ChildItem $global:cpDir -Filter '*.card') {
+    $cpid = [int]$f.BaseName
+    # Karte eines beendeten Prozesses aufraeumen
+    if ($cpid -ne $PID -and -not (Get-Process -Id $cpid | Where-Object { $_.ProcessName -eq 'powershell' })) { Remove-Item $f.FullName; continue }
+    $parts = "$(Get-Content $f.FullName -TotalCount 1)" -split '\|'
+    if ($parts.Count -lt 3) { continue }
+    [pscustomobject]@{ Pid = $cpid; Session = $parts[0]; Created = [long]$parts[1]; Height = [double]$parts[2] }
+  }
+  @($cards | Sort-Object Created, Pid -Descending)
 }
-Set-Content $pidFile $PID
+
+# Zielposition dieser Karte als @(Top, Platz), oder $null, wenn sie weichen muss
+function global:Get-CPSlot {
+  $offset = 0; $i = 0
+  foreach ($c in Get-CPCards) {
+    if ($c.Pid -eq $PID) { break }
+    if ($global:cpSession -and $c.Session -eq $global:cpSession) { return $null }
+    $offset += $c.Height - 26   # Fensterhoehe minus Schattenrand (2 x 18), plus 10 px Abstand
+    $i++
+  }
+  if ($i -ge 4) { return $null }
+  return @(($global:cpBottom - $global:cpH - $offset), $i)
+}
 
 [xml]$xaml = @'
 <Border xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -226,13 +251,31 @@ $win.WindowStyle = 'None'; $win.AllowsTransparency = $true; $win.Background = 'T
 $win.Topmost = $true; $win.ShowInTaskbar = $false; $win.ShowActivated = $false
 $win.WindowStartupLocation = 'Manual'
 $win.Width = $W; $win.Height = $H
-$win.Top = ($wa.Bottom / $scale) - $H; $win.Left = $global:cpLeft + 40
+$global:cpH = $H
+$global:cpBottom = $wa.Bottom / $scale
+# Liest gerade eine andere Karte, kann das Schreiben scheitern: kurz warten und erneut versuchen
+for ($try = 0; $try -lt 5 -and -not (Test-Path $global:cpFile); $try++) {
+  Set-Content $global:cpFile "$($global:cpSession)|$($global:cpCreated)|$H"
+  if (-not (Test-Path $global:cpFile)) { Start-Sleep -Milliseconds 50 }
+}
+$slot = Get-CPSlot
+$global:cpTop = if ($slot) { $slot[0] } else { $global:cpBottom - $H }
+$global:cpPlace = 0
+$win.Top = $global:cpTop; $win.Left = $global:cpLeft + 40
 $win.Opacity = 0
 $win.Content = $content
 $global:cpWin = $win
+$global:cpContent = $content
+$global:cpEase = New-Object System.Windows.Media.Animation.CubicEase; $global:cpEase.EasingMode = 'EaseOut'
 
 function global:Hide-CP {
-  $global:cpHold.Stop()
+  if ($global:cpHiding) { return }
+  $global:cpHiding = $true
+  $global:cpHold.Stop(); $global:cpStack.Stop()
+  # Sofort abmelden, damit die anderen Karten schon nachruecken, waehrend diese ausblendet
+  Remove-Item $global:cpFile
+  $out = New-Object System.Windows.Media.Animation.DoubleAnimation($global:cpWin.Left, ($global:cpLeft + 40), [TimeSpan]::FromMilliseconds(180))
+  $global:cpWin.BeginAnimation([System.Windows.Window]::LeftProperty, $out)
   $global:cpWin.BeginAnimation([System.Windows.Window]::OpacityProperty, (New-Object System.Windows.Media.Animation.DoubleAnimation($global:cpWin.Opacity, 0, [TimeSpan]::FromMilliseconds(180))))
   $global:cpCloseT = New-Object System.Windows.Threading.DispatcherTimer
   $global:cpCloseT.Interval = [TimeSpan]::FromMilliseconds(200)
@@ -259,21 +302,39 @@ $content.FindName('Open').Add_Click({
 $win.Add_MouseEnter({ $global:cpHold.Stop() })
 $win.Add_MouseLeave({ $global:cpHold.Start() })
 
-# Nach 8 s ausblenden (pausiert, solange die Maus darauf ist); spaetestens nach 5 min hart schliessen
+# Nach 10 s ausblenden (pausiert, solange die Maus darauf ist); spaetestens nach 5 min hart schliessen
 $global:cpHold = New-Object System.Windows.Threading.DispatcherTimer
-$global:cpHold.Interval = [TimeSpan]::FromSeconds(8)
+$global:cpHold.Interval = [TimeSpan]::FromSeconds(10)
 $global:cpHold.Add_Tick({ Hide-CP })
 $global:cpKill = New-Object System.Windows.Threading.DispatcherTimer
 $global:cpKill.Interval = [TimeSpan]::FromMinutes(5)
 $global:cpKill.Add_Tick({ $global:cpKill.Stop(); $global:cpWin.Close() })
 
+# Stapel regelmaessig pruefen: an den eigenen Platz gleiten, aeltere Karten etwas blasser, bei Bedarf weichen
+$global:cpStack = New-Object System.Windows.Threading.DispatcherTimer
+$global:cpStack.Interval = [TimeSpan]::FromMilliseconds(200)
+$global:cpStack.Add_Tick({
+  $slot = Get-CPSlot
+  if (-not $slot) { Hide-CP; return }
+  if ([math]::Abs($slot[0] - $global:cpTop) -gt 0.5) {
+    $global:cpTop = $slot[0]
+    $move = New-Object System.Windows.Media.Animation.DoubleAnimation($global:cpWin.Top, $slot[0], [TimeSpan]::FromMilliseconds(280))
+    $move.EasingFunction = $global:cpEase
+    $global:cpWin.BeginAnimation([System.Windows.Window]::TopProperty, $move)
+  }
+  if ($slot[1] -ne $global:cpPlace) {
+    $global:cpPlace = $slot[1]
+    $dim = New-Object System.Windows.Media.Animation.DoubleAnimation($global:cpContent.Opacity, (1 - 0.08 * $slot[1]), [TimeSpan]::FromMilliseconds(280))
+    $global:cpContent.BeginAnimation([System.Windows.UIElement]::OpacityProperty, $dim)
+  }
+})
+
 $win.Add_Loaded({
-  $ease = New-Object System.Windows.Media.Animation.CubicEase; $ease.EasingMode = 'EaseOut'
   $slide = New-Object System.Windows.Media.Animation.DoubleAnimation(($global:cpLeft + 40), $global:cpLeft, [TimeSpan]::FromMilliseconds(320))
-  $slide.EasingFunction = $ease
+  $slide.EasingFunction = $global:cpEase
   $global:cpWin.BeginAnimation([System.Windows.Window]::LeftProperty, $slide)
   $global:cpWin.BeginAnimation([System.Windows.Window]::OpacityProperty, (New-Object System.Windows.Media.Animation.DoubleAnimation(0, 1, [TimeSpan]::FromMilliseconds(220))))
-  $global:cpHold.Start(); $global:cpKill.Start()
+  $global:cpHold.Start(); $global:cpKill.Start(); $global:cpStack.Start()
 })
 $win.ShowDialog() | Out-Null
-if ((Get-Content $pidFile | Select-Object -First 1) -eq "$PID") { Remove-Item $pidFile }
+Remove-Item $global:cpFile
