@@ -15,11 +15,26 @@
     ],
     "Notification": [
       {
+        "matcher": "permission_prompt|idle_prompt|elicitation_dialog|elicitation_url_dialog|agent_needs_input",
         "hooks": [
           {
             "type": "command",
             "command": "powershell.exe",
             "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "${CLAUDE_PLUGIN_ROOT}/scripts/claude-popup.ps1", "-Event", "Notification"],
+            "async": true,
+            "timeout": 330
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion|ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", "${CLAUDE_PLUGIN_ROOT}/scripts/claude-popup.ps1", "-Event", "Question"],
             "async": true,
             "timeout": 330
           }
