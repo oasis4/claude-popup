@@ -1,6 +1,6 @@
-# Claude Code Popup: eigenes Benachrichtigungsfenster fuer Stop- und Notification-Hooks.
+# Claude Code Popup: eigenes Benachrichtigungsfenster fuer Stop-, Notification- und PreToolUse-Hooks.
 # Erscheint auch bei "Nicht stoeren", unten rechts auf dem Monitor mit dem Mauszeiger.
-# Aufruf durch hooks/hooks.json: powershell.exe -File claude-popup.ps1 -Event Stop|Notification  (Hook-JSON auf stdin)
+# Aufruf durch hooks/hooks.json: powershell.exe -File claude-popup.ps1 -Event Stop|Notification|Question  (Hook-JSON auf stdin)
 param([string]$Event = "Notification")
 
 $ErrorActionPreference = 'SilentlyContinue'
@@ -27,6 +27,17 @@ if ($Event -eq 'Stop') {
     $line = ($line -replace '[#*`>_]', '').Trim()
     if ($line.Length -gt 110) { $line = $line.Substring(0, 107) + "..." }
     if ($line) { $Detail = $line }
+  }
+} elseif ($Event -eq 'Question') {
+  # PreToolUse fuer AskUserQuestion und ExitPlanMode: Claude wartet auf eine Antwort
+  if ($data.tool_name -eq 'ExitPlanMode') {
+    $Title  = "Claude hat einen Plan fertig"
+    $Detail = "Schau dir den Plan an und gib ihn frei."
+  } else {
+    $Title  = "Claude hat eine Frage"
+    $Detail = "Claude wartet auf deine Antwort."
+    $q = @($data.tool_input.questions)[0].question
+    if ($q) { $Detail = $q }
   }
 } else {
   switch ($data.notification_type) {

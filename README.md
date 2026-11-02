@@ -17,6 +17,7 @@ Ein dezentes Windows-Popup für Claude Code. Es erscheint, wenn Claude fertig is
 
 ## Was es kann
 
+- **Meldet sich, wenn Claude fertig ist oder dich braucht**, also bei Berechtigungsanfragen, bei Rückfragen von Claude und wenn ein Plan auf deine Freigabe wartet.
 - **Erscheint auch bei „Nicht stören“**, weil es ein eigenes Fenster ist und kein Windows-Toast.
 - **Taucht auf dem Monitor auf, auf dem gerade deine Maus ist**, unten rechts.
 - **Zeigt den echten Inhalt:** den Text der Anfrage bzw. die erste Zeile der Antwort, dazu den Projektordner.
@@ -47,7 +48,7 @@ Danach Claude Code bzw. Claude Desktop neu starten.
 - „Zur Session“ holt das Terminal-*Fenster* nach vorne. Bei mehreren Tabs im selben Fenster wechselt es nicht zwingend auf den richtigen Tab.
 - Läuft Claude Code im Terminal von VS Code oder einer anderen App, holt „Zur Session“ das Fenster dieser App nach vorne.
 - In Claude Desktop kann das Popup nicht auf einen bestimmten Chat umschalten. Claude Desktop bietet dafür bisher keinen offiziellen Weg (die `claude://` Links können nur neue Code-Sessions öffnen). Ist Claude Desktop beim Erscheinen des Popups schon vorne, zeigt es deshalb keinen Button, sondern den Hinweis, zu welchem Projekt du in der Seitenleiste wechseln sollst.
-- In Claude Desktop löst der `Notification`-Hook je nach Version bei Berechtigungsanfragen eventuell nicht aus. Der `Stop`-Hook funktioniert.
+- Bei Berechtigungsanfragen kommt das Popup erst, wenn die Anfrage etwa 6 Sekunden unbeantwortet ist. Antwortest du vorher, bleibt es still.
 
 ## Wenn „Zur Session“ nicht funktioniert
 
