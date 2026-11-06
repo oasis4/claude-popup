@@ -60,6 +60,24 @@ Alles Weitere läuft über Umgebungsvariablen, zum Beispiel in `.claude/settings
 | `CLAUDE_POPUP_ALWAYS` | `1` zeigt das Popup auch dann, wenn das Terminal der Session schon im Vordergrund ist | `0` |
 | `CLAUDE_POPUP_MAX` | Wie viele Karten höchstens gleichzeitig zu sehen sind | `4` |
 
+## Aktualisieren
+
+`/plugin update` gibt es in der Session nicht, das ist nur ein Shell-Befehl. In Claude Code geht es so:
+
+```
+/plugin marketplace update session-popup
+/plugin manage
+```
+
+Im Panel unter **Installed** das Plugin auswählen und dort aktualisieren. Beim Schließen lädt Claude Code die Plugins neu. In einem normalen Terminal geht es auch direkt:
+
+```powershell
+claude plugin marketplace update session-popup
+claude plugin update session-popup@session-popup
+```
+
+Danach in der laufenden Session `/reload-plugins`, oder Claude Code neu starten. Neue Slash-Befehle tauchen erst nach dem Neuladen auf. Welche Version installiert ist, zeigt `/plugin list`.
+
 ## Voraussetzungen
 
 - Windows 10/11 mit Windows PowerShell 5.1 (vorinstalliert)
@@ -77,7 +95,7 @@ Alles Weitere läuft über Umgebungsvariablen, zum Beispiel in `.claude/settings
 Erster Schritt, in Claude Code:
 
 ```
-/popup-test
+/session-popup:popup-test
 ```
 
 Das räumt hängengebliebene Karten auf, zeigt ein Testpopup und gibt danach das Protokoll aus. Kommt dabei eine Karte, funktioniert das Popup grundsätzlich, und es liegt an einer der Regeln oben, also daran, dass Claude nur fertig war und das Terminal vorne, oder dass die Karte nach 10 Sekunden schon weg war.
