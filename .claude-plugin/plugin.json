@@ -1,11 +1,16 @@
 {
   "name": "session-popup",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Dezentes Windows-Popup, wenn Claude Code fertig ist oder dich braucht – mit Button zurück zur Session. Funktioniert auch bei „Nicht stören“.",
   "author": {
     "name": "oasis4"
   },
   "repository": "https://github.com/oasis4/claude-popup",
   "license": "MIT",
-  "keywords": ["windows", "notification", "popup", "hooks"]
+  "keywords": [
+    "windows",
+    "notification",
+    "popup",
+    "hooks"
+  ]
 }

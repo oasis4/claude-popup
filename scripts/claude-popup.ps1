@@ -1,22 +1,49 @@
 # Claude Code Popup: eigenes Benachrichtigungsfenster fuer Stop-, Notification- und PreToolUse-Hooks.
 # Erscheint auch bei "Nicht stoeren", unten rechts auf dem Monitor mit dem Mauszeiger.
 # Aufruf durch hooks/hooks.json: powershell.exe -File claude-popup.ps1 -Event Stop|Notification|Question  (Hook-JSON auf stdin)
-param([string]$Event = "Notification")
+# Selbsttest ohne Claude: powershell.exe -NoProfile -ExecutionPolicy Bypass -File claude-popup.ps1 -Event Stop -Test
+param([string]$Event = "Notification", [switch]$Test)
 
 $ErrorActionPreference = 'SilentlyContinue'
 
-# Protokoll zur Fehlersuche: %TEMP%\claude-popup.log, behaelt die letzten 400 Zeilen aller Popups.
-# Jede Zeile traegt die PID, weil mehrere Karten gleichzeitig schreiben koennen.
+# --- Einstellungen, aenderbar ueber Umgebungsvariablen (z. B. in .claude/settings.json unter "env") ---
+# CLAUDE_POPUP_SECONDS        Anzeigedauer, wenn Claude fertig ist, in Sekunden (Standard 10)
+# CLAUDE_POPUP_WAIT_SECONDS   Anzeigedauer, wenn Claude auf dich wartet (Standard 30)
+#                             Beide 0 = bleibt bis zum Klick stehen, hoechstens 5 Minuten
+# CLAUDE_POPUP_ALWAYS         1 = auch melden, wenn das Terminal der Session schon im Vordergrund ist
+# CLAUDE_POPUP_MAX            Hoechstzahl gleichzeitig sichtbarer Karten (Standard 4)
+function Get-CPNum([string]$name, [int]$fallback) {
+  $v = [Environment]::GetEnvironmentVariable($name)
+  if ($v -and $v -match '^\s*\d+\s*$') { return [int]$v.Trim() }
+  return $fallback
+}
+$global:cpMax = Get-CPNum 'CLAUDE_POPUP_MAX' 4
+if ($global:cpMax -lt 1) { $global:cpMax = 1 }
+$cpAlways = ($env:CLAUDE_POPUP_ALWAYS -eq '1') -or $Test
+
+# Protokoll zur Fehlersuche: %TEMP%\claude-popup.log, rund 300 KB, danach wandert es nach
+# claude-popup.log.alt. Jede Zeile traegt die PID, weil mehrere Karten gleichzeitig schreiben koennen.
 $global:cpLog = Join-Path $env:TEMP 'claude-popup.log'
-function global:Write-CPLog([string]$m) { Add-Content $global:cpLog "$(Get-Date -Format 'dd.MM. HH:mm:ss') [$PID] $m" }
-$old = @(Get-Content $global:cpLog)
-if ($old.Count -gt 400) { Set-Content $global:cpLog ($old | Select-Object -Last 300) }
-Write-CPLog "----- Event $Event"
+# Schreiben kann scheitern, wenn mehrere Karten gleichzeitig protokollieren: ein paar Versuche genuegen.
+function global:Write-CPLog([string]$m) {
+  $line = "$(Get-Date -Format 'dd.MM. HH:mm:ss') [$PID] $m"
+  for ($i = 0; $i -lt 10; $i++) {
+    try { Add-Content -LiteralPath $global:cpLog -Value $line -ErrorAction Stop; return } catch { Start-Sleep -Milliseconds 20 }
+  }
+}
+# Rotation per Umbenennen: das frueher benutzte Lesen-und-Neuschreiben verlor Zeilen anderer Prozesse
+# und konnte an der offenen Datei scheitern.
+try {
+  $fi = Get-Item -LiteralPath $global:cpLog -ErrorAction Stop
+  if ($fi.Length -gt 300000) { Move-Item -LiteralPath $global:cpLog -Destination "$($global:cpLog).alt" -Force -ErrorAction Stop }
+} catch {}
+if ($Test) { Write-CPLog "----- Event $Event (Testmodus)" } else { Write-CPLog "----- Event $Event" }
 
 # --- Hook-Daten von stdin lesen ---
 [Console]::InputEncoding = [Text.Encoding]::UTF8
 $data = $null
-try { $data = [Console]::In.ReadToEnd() | ConvertFrom-Json } catch {}
+# Im Testmodus nichts von stdin lesen: von Hand gestartet wuerde ReadToEnd endlos warten.
+if (-not $Test) { try { $data = [Console]::In.ReadToEnd() | ConvertFrom-Json } catch {} }
 
 $cwd = if ($data.cwd) { $data.cwd } else { (Get-Location).Path }
 $Project = Split-Path $cwd -Leaf
@@ -49,6 +76,11 @@ if ($Event -eq 'Stop') {
     default             { $Title = "Claude braucht dich" }
   }
   $Detail = if ($data.message) { $data.message } else { "Schau kurz in die Session." }
+}
+
+if ($Test) {
+  $Title  = "Testpopup"
+  $Detail = "Siehst du diese Karte, funktioniert das Popup. Monitor und Position stehen im Protokoll."
 }
 
 Write-CPLog "Titel '$Title', Projekt '$Project', Session '$("$($data.session_id)".Split('-')[0])'"
@@ -130,25 +162,56 @@ Write-CPLog "Vorfahren: $(($chain | ForEach-Object { "$($_.Name) $($_.ProcessId)
 Write-CPLog "Ziel: $([CP.Win]::Describe($global:cpTarget)), Terminal $isTerminal, Desktop $isDesktop"
 Write-CPLog "Vordergrund: $([CP.Win]::Describe([CP.Win]::GetForegroundWindow()))"
 
-# Kein Popup, wenn das Terminal der Session ohnehin gerade im Vordergrund ist.
+# Kein Popup, wenn das Terminal der Session vorne ist und Claude nur fertig ist.
+# Wartet Claude auf eine Antwort, kommt das Popup trotzdem: das Fenster kann vorne sein, waehrend
+# darin ein anderer Tab sichtbar ist, und dann sieht man die Anfrage nicht.
 # Nicht fuer Claude Desktop: dort laufen mehrere Sessions im selben Fenster, das sichtbare Projekt ist nicht erkennbar.
-if ($isTerminal -and [CP.Win]::GetForegroundWindow() -eq $global:cpTarget) { Write-CPLog "Terminal ist vorne, kein Popup"; exit 0 }
+if ($isTerminal -and $Event -eq 'Stop' -and -not $cpAlways -and [CP.Win]::GetForegroundWindow() -eq $global:cpTarget) {
+  Write-CPLog "Terminal ist vorne und Claude ist nur fertig, kein Popup (CLAUDE_POPUP_ALWAYS=1 zeigt es trotzdem)"
+  exit 0
+}
 
-# --- Stapel: jede Karte meldet sich mit einer Datei in %TEMP%\claude-popup an (Session|Zeit|Hoehe) ---
-# Neueste Karte unten, aeltere darueber. Hoechstens 4 Karten; meldet sich dieselbe Session erneut, weicht ihre alte Karte.
+# --- Stapel: jede Karte meldet sich mit einer Datei in %TEMP%\claude-popup an ---
+# Inhalt: Session|Zeit|Hoehe|Startzeit des Prozesses. Neueste Karte unten, aeltere darueber.
+# Hoechstens CLAUDE_POPUP_MAX Karten; meldet sich dieselbe Session erneut, weicht ihre alte Karte.
 $global:cpDir = Join-Path $env:TEMP 'claude-popup'
 New-Item -ItemType Directory -Force $global:cpDir | Out-Null
+# Im Testmodus zuerst haengengebliebene Karten entfernen: solche Karten koennen neue Popups blockieren.
+if ($Test) {
+  $alt = @(Get-ChildItem $global:cpDir -Filter '*.card')
+  if ($alt.Count) { $alt | Remove-Item -Force; Write-CPLog "Testmodus: $($alt.Count) vorhandene Karten entfernt" }
+}
 $global:cpFile = Join-Path $global:cpDir "$PID.card"
 $global:cpSession = "$($data.session_id)"
 $global:cpCreated = [DateTime]::UtcNow.Ticks
+# Startzeit des eigenen Prozesses. Sie steht im vierten Feld der Karte, damit spaetere Popups
+# erkennen, ob diese PID noch derselbe Prozess ist.
+$global:cpBorn = [long]0
+try { $global:cpBorn = (Get-Process -Id $PID).StartTime.Ticks } catch {}
 
 function global:Get-CPCards {
+  $now = [DateTime]::UtcNow
   $cards = foreach ($f in Get-ChildItem $global:cpDir -Filter '*.card') {
-    $cpid = [int]$f.BaseName
-    # Karte eines beendeten Prozesses aufraeumen
-    if ($cpid -ne $PID -and -not (Get-Process -Id $cpid | Where-Object { $_.ProcessName -eq 'powershell' })) { Remove-Item $f.FullName; continue }
+    $cpid = 0
+    if (-not [int]::TryParse($f.BaseName, [ref]$cpid)) { continue }
     $parts = "$(Get-Content $f.FullName -TotalCount 1)" -split '\|'
-    if ($parts.Count -lt 3) { continue }
+    if ($parts.Count -lt 3) {
+      # Karte wird gerade erst geschrieben: nur wegwerfen, wenn sie schon eine Weile unvollstaendig ist
+      if ($f.LastWriteTimeUtc -lt $now.AddSeconds(-10)) { Remove-Item $f.FullName }
+      continue
+    }
+    if ($cpid -ne $PID) {
+      # Aufraeumen, wenn der Prozess weg ist. Die Startzeit entlarvt eine neu vergebene PID:
+      # ohne diese Pruefung konnten alte Karten (etwa nach einem Neustart) jedes neue Popup blockieren,
+      # weil zufaellig wieder ein powershell-Prozess dieselbe PID hatte.
+      $own = Get-Process -Id $cpid
+      $born = [long]0
+      if ($parts.Count -ge 4) { [long]::TryParse($parts[3], [ref]$born) | Out-Null }
+      $same = $own -and ($born -eq 0 -or [math]::Abs($own.StartTime.Ticks - $born) -lt 20000000)
+      # Zweites Netz: der Notaus schliesst jedes Fenster nach 5 Minuten, danach ist jede Karte ueberfaellig.
+      $stale = $f.LastWriteTimeUtc -lt $now.AddMinutes(-6)
+      if (-not $same -or $stale) { Remove-Item $f.FullName; continue }
+    }
     [pscustomobject]@{ Pid = $cpid; Session = $parts[0]; Created = [long]$parts[1]; Height = [double]$parts[2] }
   }
   @($cards | Sort-Object Created, Pid -Descending)
@@ -156,14 +219,17 @@ function global:Get-CPCards {
 
 # Zielposition dieser Karte als @(Top, Platz), oder $null, wenn sie weichen muss
 function global:Get-CPSlot {
-  $offset = 0; $i = 0
+  $offset = 0; $i = 0; $mine = $false
   foreach ($c in Get-CPCards) {
-    if ($c.Pid -eq $PID) { break }
+    if ($c.Pid -eq $PID) { $mine = $true; break }
     if ($global:cpSession -and $c.Session -eq $global:cpSession) { return $null }
     $offset += $c.Height - 26   # Fensterhoehe minus Schattenrand (2 x 18), plus 10 px Abstand
     $i++
   }
-  if ($i -ge 4) { return $null }
+  # Ohne eigene Karte (Anmeldung fehlgeschlagen) gilt diese Karte als die neueste, statt sich von
+  # fremden Karten verdraengen zu lassen. Zwei Karten uebereinander sind besser als gar kein Popup.
+  if (-not $mine) { return @(($global:cpBottom - $global:cpH), 0) }
+  if ($i -ge $global:cpMax) { return $null }
   return @(($global:cpBottom - $global:cpH - $offset), $i)
 }
 
@@ -247,7 +313,10 @@ $W = 400
 $content.Measure((New-Object System.Windows.Size($W, [double]::PositiveInfinity)))
 $H = [math]::Ceiling($content.DesiredSize.Height)
 $scr   = [System.Windows.Forms.Screen]::FromPoint([System.Windows.Forms.Cursor]::Position)
+if (-not $scr) { $scr = [System.Windows.Forms.Screen]::PrimaryScreen; Write-CPLog "Monitor unter der Maus nicht ermittelbar, nehme den Hauptmonitor" }
 $scale = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width / [System.Windows.SystemParameters]::PrimaryScreenWidth
+# Ohne Notbremse wuerde eine 0 hier das Popup still durch eine Division mit Null beenden
+if (-not ($scale -gt 0)) { Write-CPLog "Skalierung nicht ermittelbar, nehme 1"; $scale = 1 }
 $wa = $scr.WorkingArea
 $global:cpLeft = ($wa.Right / $scale) - $W
 
@@ -258,13 +327,20 @@ $win.WindowStartupLocation = 'Manual'
 $win.Width = $W; $win.Height = $H
 $global:cpH = $H
 $global:cpBottom = $wa.Bottom / $scale
+Write-CPLog "Monitor $($scr.DeviceName), Arbeitsflaeche $($wa.Width)x$($wa.Height) bei $($wa.X),$($wa.Y), Skalierung $scale, Karte $W x $H"
 # Liest gerade eine andere Karte, kann das Schreiben scheitern: kurz warten und erneut versuchen
 for ($try = 0; $try -lt 5 -and -not (Test-Path $global:cpFile); $try++) {
-  Set-Content $global:cpFile "$($global:cpSession)|$($global:cpCreated)|$H"
+  Set-Content $global:cpFile "$($global:cpSession)|$($global:cpCreated)|$H|$($global:cpBorn)"
   if (-not (Test-Path $global:cpFile)) { Start-Sleep -Milliseconds 50 }
 }
+if (-not (Test-Path $global:cpFile)) { Write-CPLog "Warnung: eigene Karte konnte nicht angemeldet werden" }
 $slot = Get-CPSlot
+$global:cpSlotIdx = if ($slot) { $slot[1] } else { -1 }
 $global:cpTop = if ($slot) { $slot[0] } else { $global:cpBottom - $H }
+# Sicherheitsnetz: nie ausserhalb der Arbeitsflaeche landen, sonst waere das Popup unsichtbar.
+if ($global:cpTop -lt ($wa.Y / $scale)) { $global:cpTop = $wa.Y / $scale }
+if ($global:cpLeft -lt ($wa.X / $scale)) { $global:cpLeft = $wa.X / $scale }
+$global:cpShown = [DateTime]::UtcNow
 $global:cpPlace = 0
 $win.Top = $global:cpTop; $win.Left = $global:cpLeft + 40
 $win.Opacity = 0
@@ -305,12 +381,15 @@ $content.FindName('Open').Add_Click({
   Hide-CP
 })
 $win.Add_MouseEnter({ $global:cpHold.Stop() })
-$win.Add_MouseLeave({ $global:cpHold.Start() })
+$win.Add_MouseLeave({ if ($global:cpHoldOn) { $global:cpHold.Start() } })
 
-# Nach 10 s ausblenden (pausiert, solange die Maus darauf ist); spaetestens nach 5 min hart schliessen
+# Ausblenden nach der Anzeigedauer (pausiert, solange die Maus darauf ist); spaetestens nach 5 min hart schliessen.
+# Wartet Claude auf eine Antwort, bleibt die Karte laenger stehen als wenn er nur fertig ist.
+$cpSecs = if ($Event -eq 'Stop') { Get-CPNum 'CLAUDE_POPUP_SECONDS' 10 } else { Get-CPNum 'CLAUDE_POPUP_WAIT_SECONDS' 30 }
+$global:cpHoldOn = $cpSecs -gt 0
 $global:cpHold = New-Object System.Windows.Threading.DispatcherTimer
-$global:cpHold.Interval = [TimeSpan]::FromSeconds(10)
-$global:cpHold.Add_Tick({ Write-CPLog "Nach 10 s ausgeblendet"; Hide-CP })
+$global:cpHold.Interval = [TimeSpan]::FromSeconds([math]::Max(1, $cpSecs))
+$global:cpHold.Add_Tick({ Write-CPLog "Anzeigedauer abgelaufen, ausgeblendet"; Hide-CP })
 $global:cpKill = New-Object System.Windows.Threading.DispatcherTimer
 $global:cpKill.Interval = [TimeSpan]::FromMinutes(5)
 $global:cpKill.Add_Tick({ $global:cpKill.Stop(); $global:cpWin.Close() })
@@ -320,7 +399,11 @@ $global:cpStack = New-Object System.Windows.Threading.DispatcherTimer
 $global:cpStack.Interval = [TimeSpan]::FromMilliseconds(200)
 $global:cpStack.Add_Tick({
   $slot = Get-CPSlot
-  if (-not $slot) { Write-CPLog "Karte weicht (neuere Karte derselben Session oder mehr als 4)"; Hide-CP; return }
+  if (-not $slot) {
+    # Erst richtig anzeigen, dann ggf. weichen, sonst blitzt eine Karte nur kurz auf.
+    if (([DateTime]::UtcNow - $global:cpShown).TotalMilliseconds -lt 2000) { return }
+    Write-CPLog "Karte weicht (neuere Karte derselben Session oder zu viele Karten)"; Hide-CP; return
+  }
   if ([math]::Abs($slot[0] - $global:cpTop) -gt 0.5) {
     $global:cpTop = $slot[0]
     $move = New-Object System.Windows.Media.Animation.DoubleAnimation($global:cpWin.Top, $slot[0], [TimeSpan]::FromMilliseconds(280))
@@ -335,11 +418,21 @@ $global:cpStack.Add_Tick({
 })
 
 $win.Add_Loaded({
+  $global:cpShown = [DateTime]::UtcNow
+  Write-CPLog "Angezeigt bei links $([math]::Round($global:cpLeft)) oben $([math]::Round($global:cpTop)), Platz $($global:cpSlotIdx), $(@(Get-CPCards).Count) Karten offen, Anzeigedauer $($global:cpHold.Interval.TotalSeconds)s"
   $slide = New-Object System.Windows.Media.Animation.DoubleAnimation(($global:cpLeft + 40), $global:cpLeft, [TimeSpan]::FromMilliseconds(320))
   $slide.EasingFunction = $global:cpEase
   $global:cpWin.BeginAnimation([System.Windows.Window]::LeftProperty, $slide)
   $global:cpWin.BeginAnimation([System.Windows.Window]::OpacityProperty, (New-Object System.Windows.Media.Animation.DoubleAnimation(0, 1, [TimeSpan]::FromMilliseconds(220))))
-  $global:cpHold.Start(); $global:cpKill.Start(); $global:cpStack.Start()
+  if ($global:cpHoldOn) { $global:cpHold.Start() }
+  $global:cpKill.Start(); $global:cpStack.Start()
 })
+if ($Test) { Write-Host "Popup wird angezeigt. Protokoll: $($global:cpLog)" }
 $win.ShowDialog() | Out-Null
 Remove-Item $global:cpFile
+Write-CPLog "Popup beendet"
+if ($Test) {
+  Write-Host ""
+  Write-Host "--- letzte Protokollzeilen ($($global:cpLog)) ---"
+  Get-Content -LiteralPath $global:cpLog -Tail 25 | ForEach-Object { Write-Host $_ }
+}
